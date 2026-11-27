@@ -16,11 +16,12 @@
         .message { max-width: 70%; padding: 10px 14px; border-radius: 12px; position: relative; word-wrap: break-word; }
         .msg-header { font-size: 12px; font-weight: bold; margin-bottom: 4px; }
         .msg-time { font-size: 11px; opacity: 0.7; text-align: right; margin-top: 4px; }
+        .msg-status { margin-left: 4px; font-weight: bold; color: #78909c; }
+        .msg-status.read { color: #1e88e5; }
         .my-message { background: #e3f2fd; color: #0d47a1; align-self: flex-end; border-bottom-right-radius: 2px; }
         .other-message { background: #f1f3f4; color: #333; align-self: flex-start; border-bottom-left-radius: 2px; }
 
-        .system-message { align-self: center; background: #eceff1;color: #546e7a; font-size: 12px; padding: 4px 12px;
-        border-radius: 12px;}
+        .system-message { align-self: center; background: #eceff1; color: #546e7a; font-size: 12px; padding: 4px 12px; border-radius: 12px; }
 
         .input-area { display: flex; margin-top: 20px; gap: 10px; }
         input { flex: 1; padding: 12px; border: 1px solid #ccc; border-radius: 6px; font-size: 16px; outline: none; }
@@ -50,7 +51,7 @@
 
     <script>
         let username = "";
-        let ws; 
+        let ws;
 
         const loginScreen = document.getElementById("login-screen");
         const chatScreen = document.getElementById("chat-screen");
@@ -59,50 +60,77 @@
         const usernameInput = document.getElementById("username-input");
         const passwordInput = document.getElementById("password-input");
 
+        function sendReadReceipt() {
+            if (ws && ws.readyState === WebSocket.OPEN && document.visibilityState === "visible") {
+                ws.send(JSON.stringify({ type: "read" }));
+            }
+        }
+
         function joinChat() {
             const name = usernameInput.value.trim();
             const pass = passwordInput.value.trim();
-            
+
             if (name === "" || pass === "") {
                 alert("Заполни оба поля!");
                 return;
             }
-            
+
             username = name;
-            
-            // Стучимся на сервер и передаем пароль в адресе запроса
+
             const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-            ws = new WebSocket( wsProtocol + "//" + window.location.host + "/ws?pass=" + encodeURIComponent(pass) + 
-            "&name=" + encodeURIComponent(name)
+            ws = new WebSocket(
+                wsProtocol + "//" + window.location.host +
+                "/ws?pass=" + encodeURIComponent(pass) +
+                "&name=" + encodeURIComponent(name)
             );
 
-            // Если сервер принял пароль, пускаем в чат
             ws.onopen = function() {
                 loginScreen.style.display = "none";
                 chatScreen.style.display = "flex";
+                sendReadReceipt();
             };
 
-            // Если сервер сбросил соединение (неверный пароль)
             ws.onclose = function(event) {
                 if (event.code !== 1000) {
                     alert("Доступ закрыт: неверный пароль или в чате уже есть 2 человека!");
                 }
             };
 
-        ws.onmessage = function(event) {
+            ws.onmessage = function(event) {
                 const msg = JSON.parse(event.data);
+
+                if (msg.type === "read") {
+                    if (msg.author !== username) {
+                        document.querySelectorAll(".msg-status").forEach(el => {
+                            el.textContent = "✓✓";
+                            el.classList.add("read");
+                        });
+                    }
+                    return;
+                }
+
                 const msgDiv = document.createElement("div");
 
                 if (msg.type === "system") {
                     msgDiv.className = "system-message";
                     msgDiv.textContent = `${msg.text} • ${msg.time}`;
                 } else {
-                    msgDiv.className = msg.author === username ? "message my-message" : "message other-message";
+                    const isMine = msg.author === username;
+                    msgDiv.className = isMine ? "message my-message" : "message other-message";
+
+                    const statusHtml = isMine
+                        ? `<span class="msg-status ${msg.is_read ? "read" : ""}">${msg.is_read ? "✓✓" : "✓"}</span>`
+                        : "";
+
                     msgDiv.innerHTML = `
                         <div class="msg-header">${msg.author}</div>
                         <div>${msg.text}</div>
-                        <div class="msg-time">${msg.time}</div>
+                        <div class="msg-time">${msg.time}${statusHtml}</div>
                     `;
+
+                    if (!isMine) {
+                        sendReadReceipt();
+                    }
                 }
 
                 chatMessages.appendChild(msgDiv);
@@ -113,12 +141,13 @@
         function sendMessage() {
             const text = msgInput.value.trim();
             if (text !== "" && ws && ws.readyState === WebSocket.OPEN) {
-                const payload = JSON.stringify({ author: username, text: text });
+                const payload = JSON.stringify({ type: "chat", author: username, text: text });
                 ws.send(payload);
                 msgInput.value = "";
             }
         }
 
+        document.addEventListener("visibilitychange", sendReadReceipt);
         passwordInput.addEventListener("keypress", function(e) { if (e.key === "Enter") joinChat(); });
         msgInput.addEventListener("keypress", function(e) { if (e.key === "Enter") sendMessage(); });
     </script>

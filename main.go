@@ -13,10 +13,12 @@ import (
 )
 
 type ChatMessage struct {
+	ID     int64  `json:"id,omitempty"`
 	Type   string `json:"type"`
 	Author string `json:"author"`
 	Text   string `json:"text"`
 	Time   string `json:"time"`
+	IsRead bool   `json:"is_read"`
 }
 
 var upgrader = websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
@@ -47,11 +49,15 @@ func main() {
 		id INTEGER PRIMARY KEY AUTOINCREMENT, 
 		author TEXT,
 		content TEXT,
-		time TEXT
+		time TEXT,
+		is_read INTEGER DEFAULT 0
 	)`)
 	if err != nil {
 		log.Fatal(err)
 	}
+
+	// Добавляем колонку is_read в уже существующую таблицу (ошибку игнорируем, если колонка уже есть)
+	db.Exec(`ALTER TABLE messages ADD COLUMN is_read INTEGER DEFAULT 0`)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		http.ServeFile(w, r, "index.html")
@@ -91,12 +97,14 @@ func main() {
 		clients[conn] = name
 		mu.Unlock()
 
-		// 1. Сначала отправляем новичку историю
-		rows, _ := db.Query("SELECT author, content, time FROM messages ORDER BY id ASC")
+		// 1. Отправляем историю с учётом статуса прочтения
+		rows, _ := db.Query("SELECT id, author, content, time, COALESCE(is_read, 0) FROM messages ORDER BY id ASC")
 		for rows.Next() {
 			var msg ChatMessage
+			var isReadInt int
 			msg.Type = "chat"
-			rows.Scan(&msg.Author, &msg.Text, &msg.Time)
+			rows.Scan(&msg.ID, &msg.Author, &msg.Text, &msg.Time, &isReadInt)
+			msg.IsRead = isReadInt == 1
 			conn.WriteJSON(msg)
 		}
 		rows.Close()
@@ -114,7 +122,7 @@ func main() {
 			mu.Unlock()
 			conn.Close()
 
-			// 3. Уведомляем оставшихся о выходе
+			// 3. Уведомляем о выходе
 			broadcast(ChatMessage{
 				Type: "system",
 				Text: name + " вышел(ла) из чата",
@@ -129,9 +137,31 @@ func main() {
 				break
 			}
 
+			// Обработка события прочтения
+			if msg.Type == "read" {
+				res, err := db.Exec("UPDATE messages SET is_read = 1 WHERE author != ? AND is_read = 0", name)
+				if err == nil {
+					affected, _ := res.RowsAffected()
+					if affected > 0 {
+						broadcast(ChatMessage{
+							Type:   "read",
+							Author: name,
+						})
+					}
+				}
+				continue
+			}
+
+			// Обычное сообщение
 			msg.Type = "chat"
+			msg.Author = name
 			msg.Time = time.Now().Format("15:04")
-			db.Exec("INSERT INTO messages (author, content, time) VALUES (?, ?, ?)", msg.Author, msg.Text, msg.Time)
+			msg.IsRead = false
+
+			res, err := db.Exec("INSERT INTO messages (author, content, time, is_read) VALUES (?, ?, ?, 0)", msg.Author, msg.Text, msg.Time)
+			if err == nil {
+				msg.ID, _ = res.LastInsertId()
+			}
 
 			broadcast(msg)
 		}
